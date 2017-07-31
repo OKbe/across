@@ -4,7 +4,7 @@
 #
 # System Required:  CentOS 6+, Debian7+, Ubuntu12+
 #
-# Copyright (C) 2016 Teddysun <i@teddysun.com>
+# Copyright (C) 2016-2017 Teddysun <i@teddysun.com>
 #
 # URL: https://teddysun.com/489.html
 #
@@ -34,13 +34,24 @@ elif cat /proc/version | grep -Eqi "centos|red hat|redhat"; then
     release="centos"
 fi
 
-if [[ `getconf WORD_BIT` == "32" && `getconf LONG_BIT` == "64" ]]; then
-    deb_kernel_url="http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.9.1/linux-image-4.9.1-040901-generic_4.9.1-040901.201701060531_amd64.deb"
-    deb_kernel_name="linux-image-4.9.1-amd64.deb"
-else
-    deb_kernel_url="http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.9.1/linux-image-4.9.1-040901-generic_4.9.1-040901.201701060531_i386.deb"
-    deb_kernel_name="linux-image-4.9.1-i386.deb"
-fi
+get_latest_version() {
+
+    latest_version=$(wget -qO- http://kernel.ubuntu.com/~kernel-ppa/mainline/ | awk -F'\"v' '/v[4-9]./{print $2}' | cut -d/ -f1 | grep -v -  | sort -V | tail -1)
+
+    [ -z ${latest_version} ] && return 1
+
+    if [[ `getconf WORD_BIT` == "32" && `getconf LONG_BIT` == "64" ]]; then
+        deb_name=$(wget -qO- http://kernel.ubuntu.com/~kernel-ppa/mainline/v${latest_version}/ | grep "linux-image" | grep "generic" | awk -F'\">' '/amd64.deb/{print $2}' | cut -d'<' -f1 | head -1)
+        deb_kernel_url="http://kernel.ubuntu.com/~kernel-ppa/mainline/v${latest_version}/${deb_name}"
+        deb_kernel_name="linux-image-${latest_version}-amd64.deb"
+    else
+        deb_name=$(wget -qO- http://kernel.ubuntu.com/~kernel-ppa/mainline/v${latest_version}/ | grep "linux-image" | grep "generic" | awk -F'\">' '/i386.deb/{print $2}' | cut -d'<' -f1 | head -1)
+        deb_kernel_url="http://kernel.ubuntu.com/~kernel-ppa/mainline/v${latest_version}/${deb_name}"
+        deb_kernel_name="linux-image-${latest_version}-i386.deb"
+    fi
+
+    [ ! -z ${deb_name} ] && return 0 || return 1
+}
 
 get_opsy() {
     [ -f /etc/redhat-release ] && awk '{print ($1,$3~/^[0-9]/?$3:$4)}' /etc/redhat-release && return
@@ -88,7 +99,7 @@ centosversion() {
 
 check_bbr_status() {
     local param=$(sysctl net.ipv4.tcp_available_congestion_control | awk '{print $3}')
-    if uname -r | grep -Eqi "4.9."; then
+    if uname -r | grep -Eqi "4.10."; then
         if [[ "${param}" == "bbr" ]]; then
             return 0
         else
@@ -100,18 +111,22 @@ check_bbr_status() {
 }
 
 install_elrepo() {
-    rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org
+
     if centosversion 5; then
         echo -e "${red}Error:${plain} not supported CentOS 5."
         exit 1
-    elif centosversion 6; then
-        rpm -Uvh http://www.elrepo.org/elrepo-release-6-6.el6.elrepo.noarch.rpm
+    fi
+
+    rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org
+
+    if centosversion 6; then
+        rpm -Uvh http://www.elrepo.org/elrepo-release-6-8.el6.elrepo.noarch.rpm
     elif centosversion 7; then
-        rpm -Uvh http://www.elrepo.org/elrepo-release-7.0-2.el7.elrepo.noarch.rpm
+        rpm -Uvh http://www.elrepo.org/elrepo-release-7.0-3.el7.elrepo.noarch.rpm
     fi
 
     if [ ! -f /etc/yum.repos.d/elrepo.repo ]; then
-        echo -e "${red}Error:${plain} Install ELRepo failed, please check it."
+        echo -e "${red}Error:${plain} Install elrepo failed, please check it."
         exit 1
     fi
 }
@@ -152,20 +167,22 @@ install_bbr() {
 
     if [[ "${release}" == "centos" ]]; then
         install_elrepo
-        yum --enablerepo=elrepo-kernel -y install kernel-ml
+        yum --enablerepo=elrepo-kernel -y install kernel-ml kernel-ml-devel
         if [ $? -ne 0 ]; then
             echo -e "${red}Error:${plain} Install latest kernel failed, please check it."
             exit 1
         fi
     elif [[ "${release}" == "debian" || "${release}" == "ubuntu" ]]; then
         [[ ! -e "/usr/bin/wget" ]] && apt-get -y update && apt-get -y install wget
+        get_latest_version
+        [ $? -ne 0 ] && echo -e "${red}Error:${plain} Get latest kernel version failed." && exit 1
         wget -c -t3 -T60 -O ${deb_kernel_name} ${deb_kernel_url}
         if [ $? -ne 0 ]; then
             echo -e "${red}Error:${plain} Download ${deb_kernel_name} failed, please check it."
             exit 1
         fi
         dpkg -i ${deb_kernel_name}
-        rm -f ${deb_kernel_name}
+        rm -fv ${deb_kernel_name}
     else
         echo -e "${red}Error:${plain} OS is not be supported, please change to CentOS/Debian/Ubuntu and try again."
         exit 1
